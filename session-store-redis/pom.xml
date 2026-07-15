@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.wso2.carbon.identity.session.store</groupId>
+        <artifactId>session-store-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>session-store-redis</artifactId>
+    <!-- OSGi bundle: maven-bundle-plugin embeds Lettuce + Netty so they never leak onto the
+         core classpath, preserving zero core-to-Redis coupling. -->
+    <packaging>bundle</packaging>
+    <name>WSO2 IS - Session Store Redis (incubator bundle)</name>
+    <description>
+        Redis-backed SessionStore implementation. Standalone topology, hybrid-hash value layout,
+        native per-key TTL. Self-registers as a SessionStore OSGi service that the framework's
+        session.store reference collects.
+    </description>
+
+    <dependencies>
+        <!-- SessionStore SPI + SessionContextDO + SessionDataStoreUtils. provided: supplied at
+             runtime by the already-deployed framework bundle, never embedded. -->
+        <dependency>
+            <groupId>org.wso2.carbon.identity.framework</groupId>
+            <artifactId>org.wso2.carbon.identity.application.authentication.framework</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <!-- provided deps are not transitive, so name the ones we use directly:
+             identity.core (IdentityCoreInitializedEvent) and carbon.base (MultitenantConstants). -->
+        <dependency>
+            <groupId>org.wso2.carbon.identity.framework</groupId>
+            <artifactId>org.wso2.carbon.identity.core</artifactId>
+            <version>${carbon.identity.framework.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.wso2.carbon</groupId>
+            <artifactId>org.wso2.carbon.base</artifactId>
+            <version>${carbon.base.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.lettuce</groupId>
+            <artifactId>lettuce-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- OSGi declarative-services annotations: compile-only. -->
+        <dependency>
+            <groupId>org.osgi</groupId>
+            <artifactId>org.osgi.service.component.annotations</artifactId>
+            <version>${osgi.annotations.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Tests. -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.felix</groupId>
+                <artifactId>maven-bundle-plugin</artifactId>
+                <configuration>
+                    <instructions>
+                        <Bundle-SymbolicName>org.wso2.carbon.identity.session.store.redis</Bundle-SymbolicName>
+                        <!-- Embed Lettuce + Netty (and reactive deps) inside the bundle. -->
+                        <Embed-Dependency>lettuce-core,netty-*,reactor-core,reactive-streams;scope=compile|runtime</Embed-Dependency>
+                        <Embed-Transitive>true</Embed-Transitive>
+                        <Import-Package>
+                            org.wso2.carbon.identity.application.authentication.framework.store,
+                            org.wso2.carbon.identity.core.cache,
+                            org.osgi.service.component;version="[1.4,2)",
+                            org.osgi.service.component.annotations;resolution:=optional,
+                            org.slf4j,
+                            *;resolution:=optional
+                        </Import-Package>
+                        <Export-Package>!*</Export-Package>
+                    </instructions>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
