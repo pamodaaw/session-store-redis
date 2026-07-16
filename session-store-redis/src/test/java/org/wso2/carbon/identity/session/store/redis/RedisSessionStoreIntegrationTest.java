@@ -72,9 +72,6 @@ class RedisSessionStoreIntegrationTest {
     @BeforeEach
     void setUp() {
 
-        // The store delegates (de)serialization to the framework's registered serializer.
-        FrameworkServiceDataHolder.getInstance().setSessionSerializer(new JavaSessionSerializer());
-
         String hostPort = REDIS.getHost() + ":" + REDIS.getMappedPort(6379);
         store = new RedisSessionDataStore(new RedisStoreConfig.Builder().hosts(hostPort).build());
         inspectClient = RedisClient.create("redis://" + hostPort);
@@ -261,7 +258,7 @@ class RedisSessionStoreIntegrationTest {
     void temporaryAuthnContextRoundTripAndTtl() {
 
         String ctxId = "ctx-temp";
-        store.storeTempAuthnContextData(ctxId, TYPE_AUTHCTX, entry("state", TimeUnit.MINUTES.toNanos(5)),
+        store.storeSessionData(ctxId, TYPE_AUTHCTX, entry("state", TimeUnit.MINUTES.toNanos(5)),
                 TENANT);
 
         Object read = store.getSessionData(ctxId, TYPE_AUTHCTX);
@@ -278,7 +275,7 @@ class RedisSessionStoreIntegrationTest {
     void removingTemporaryAuthnContextDeletesItHard() {
 
         String ctxId = "ctx-temp-remove";
-        store.storeTempAuthnContextData(ctxId, TYPE_AUTHCTX, entry("state", TimeUnit.MINUTES.toNanos(5)),
+        store.storeSessionData(ctxId, TYPE_AUTHCTX, entry("state", TimeUnit.MINUTES.toNanos(5)),
                 TENANT);
         store.removeTempAuthnContextData(ctxId, TYPE_AUTHCTX);
 

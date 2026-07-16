@@ -16,13 +16,13 @@
     <packaging>bundle</packaging>
     <name>WSO2 IS - Session Store Redis (incubator bundle)</name>
     <description>
-        Redis-backed SessionStore implementation. Standalone topology, hybrid-hash value layout,
-        native per-key TTL. Self-registers as a SessionStore OSGi service that the framework's
+        Redis-backed SessionDataStore implementation. Standalone topology, hybrid-hash value layout,
+        native per-key TTL. Self-registers as a SessionDataStore OSGi service that the framework's
         session.store reference collects.
     </description>
 
     <dependencies>
-        <!-- SessionStore SPI + SessionContextDO + SessionDataStoreUtils. provided: supplied at
+        <!-- SessionDataStore supertype + SessionContextDO. provided: supplied at
              runtime by the already-deployed framework bundle, never embedded. -->
         <dependency>
             <groupId>org.wso2.carbon.identity.framework</groupId>
@@ -93,6 +93,7 @@
                         <Import-Package>
                             org.wso2.carbon.identity.application.authentication.framework.store,
                             org.wso2.carbon.identity.core.cache,
+                            org.wso2.carbon.identity.core.util,
                             org.osgi.service.component;version="[1.4,2)",
                             org.osgi.service.component.annotations;resolution:=optional,
                             org.slf4j,
