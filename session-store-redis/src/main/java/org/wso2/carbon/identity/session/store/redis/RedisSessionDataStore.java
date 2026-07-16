@@ -23,12 +23,10 @@ import io.lettuce.core.SetArgs;
 import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.wso2.carbon.base.MultitenantConstants;
 import org.wso2.carbon.identity.application.authentication.framework.store.SessionContextDO;
-import org.wso2.carbon.identity.application.authentication.framework.store.SessionDataStoreUtils;
-import org.wso2.carbon.identity.application.authentication.framework.store.SessionStore;
+import org.wso2.carbon.identity.application.authentication.framework.store.SessionDataStore;
 import org.wso2.carbon.identity.session.store.redis.config.RedisStoreConfig;
-import org.wso2.carbon.identity.session.store.redis.serialize.FrameworkSessionObjectSerializer;
+import org.wso2.carbon.identity.session.store.redis.serialize.JavaSessionObjectSerializer;
 import org.wso2.carbon.identity.session.store.redis.serialize.SessionObjectSerializer;
 
 import java.nio.charset.StandardCharsets;
@@ -40,28 +38,33 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
- * Redis-backed {@link SessionStore}. Standalone topology, hybrid-hash value layout, native
+ * Redis-backed {@link SessionDataStore}. Standalone topology, hybrid-hash value layout, native
  * per-key TTL.
  *
- * <p><b>Native expiry.</b> Every key is written <em>atomically with its TTL</em> &mdash; there is
- * no write path that produces a key without an expiry, so nothing leaks. Redis evicts expired keys
- * itself, so {@link #removeExpiredSessionData()} is a deliberate no-op and no cleanup thread runs
- * for this backend.
+ * <p>It <b>extends</b> the core {@code SessionDataStore} abstract supertype, so it <em>is</em> the
+ * exact type every caller already holds; {@code SessionDataStore.getInstance()} returns this
+ * instance when {@code SessionStoreImplType = Redis}. It implements the core data operations and
+ * overrides {@link #supportsNativeExpiry()}; the relational-specific methods (operation-scoped
+ * reads, {@code persistSessionData}, cleanup toggles) are inherited as no-ops/defaults.
  *
- * <p><b>TTL parity with JDBC.</b> The remaining validity is derived from
- * {@link SessionDataStoreUtils#getValidityPeriodNano(Object, String, int)} &mdash; the same logic
- * the JDBC store uses &mdash; then translated into the Redis key TTL.
+ * <p><b>Native expiry.</b> Every key is written <em>atomically with its TTL</em> &mdash; there is
+ * no write path that produces a key without an expiry. Redis evicts expired keys itself, so
+ * {@link #removeExpiredSessionData()} is a deliberate no-op.
+ *
+ * <p><b>TTL parity.</b> Validity is derived via the inherited
+ * {@link SessionDataStore#getValidityPeriodNano(Object, String, int)} &mdash; the same logic the
+ * JDBC store uses to compute {@code EXPIRY_TIME} &mdash; then translated into the key TTL.
  *
  * <p><b>Hybrid hash.</b> The live SSO session ({@code AppAuthFrameworkSessionContextCache}) is a
  * hash carrying queryable metadata + an opaque {@code payload}; other types (auth-flow/temp) are a
  * single serialized string under the {@code authctx} keyspace.
  *
- * <p><b>Tenant resolution.</b> The SPI reads take only {@code (key, type)} but the canonical key
- * scheme embeds {@code tenantId} in every data key. This is bridged by a small, non-sensitive
+ * <p><b>Tenant resolution.</b> The reads take only {@code (key, type)} but the canonical key scheme
+ * embeds {@code tenantId} in every data key. This is bridged by a small, non-sensitive
  * tenant-pointer key ({@code {prefix}:ref:{id}} &rarr; tenantId, same TTL) written on store and
  * read on lookup.
  */
-public class RedisSessionDataStore implements SessionStore {
+public class RedisSessionDataStore extends SessionDataStore {
 
     private static final Logger LOG = LoggerFactory.getLogger(RedisSessionDataStore.class);
 
@@ -86,7 +89,7 @@ public class RedisSessionDataStore implements SessionStore {
 
         this.connectionManager = new RedisConnectionManager(config);
         this.keys = new RedisKeyBuilder(config.getKeyPrefix());
-        this.serializer = new FrameworkSessionObjectSerializer();
+        this.serializer = new JavaSessionObjectSerializer();
         this.failClosed = config.isFailClosed();
     }
 
@@ -96,27 +99,15 @@ public class RedisSessionDataStore implements SessionStore {
         return RedisConstants.STORE_NAME;
     }
 
-    @Override
-    public boolean supportsNativeExpiry() {
-
-        return true;
-    }
-
     // ---------------------------------------------------------------------
-    // Session data
+    // Core data operations
     // ---------------------------------------------------------------------
-
-    @Override
-    public void storeSessionData(String key, String type, Object entry) {
-
-        storeSessionData(key, type, entry, MultitenantConstants.INVALID_TENANT_ID);
-    }
 
     @Override
     public void storeSessionData(String key, String type, Object entry, int tenantId) {
 
         guard(() -> {
-            long ttlMillis = computeTtlMillis(entry, type, tenantId);
+            long ttlMillis = computeTtlMillis(getValidityPeriodNano(entry, type, tenantId));
             if (ttlMillis <= 0) {
                 // Already expired: persist nothing and remove any prior record.
                 clearSessionData(key, type);
@@ -178,17 +169,6 @@ public class RedisSessionDataStore implements SessionStore {
     }
 
     @Override
-    public void clearSessionDataBatch(List<String> keys, String type) {
-
-        if (keys == null) {
-            return;
-        }
-        for (String key : keys) {
-            clearSessionData(key, type);
-        }
-    }
-
-    @Override
     public void removeSessionData(String key, String type, long nanoTime) {
 
         // Single key per record: nanoTime is irrelevant. Hard removal (no LOGGED_OUT marker).
@@ -199,12 +179,11 @@ public class RedisSessionDataStore implements SessionStore {
             }
             RedisCommands<String, byte[]> redis = connectionManager.sync();
             if (isSessionContextType(type)) {
-                redis.unlink(this.keys.sessionDataKey(tenantId, key),
-                        this.keys.sessionStateKey(tenantId, key));
+                redis.unlink(keys.sessionDataKey(tenantId, key), keys.sessionStateKey(tenantId, key));
             } else {
-                redis.unlink(this.keys.authCtxKey(tenantId, key));
+                redis.unlink(keys.authCtxKey(tenantId, key));
             }
-            redis.del(this.keys.refKey(key));
+            redis.del(keys.refKey(key));
         });
     }
 
@@ -212,6 +191,20 @@ public class RedisSessionDataStore implements SessionStore {
     public void removeExpiredSessionData() {
 
         // Native TTL: Redis evicts expired keys itself; expiry never walks the keyspace. No-op.
+    }
+
+    @Override
+    public void removeTempAuthnContextData(String key, String type) {
+
+        guard(() -> {
+            Integer tenantId = lookupTenant(key);
+            if (tenantId == null) {
+                return;
+            }
+            RedisCommands<String, byte[]> redis = connectionManager.sync();
+            redis.unlink(keys.authCtxKey(tenantId, key));
+            redis.del(keys.refKey(key));
+        });
     }
 
     @Override
@@ -231,48 +224,16 @@ public class RedisSessionDataStore implements SessionStore {
     }
 
     // ---------------------------------------------------------------------
-    // Temporary auth-flow data
-    // ---------------------------------------------------------------------
-
-    @Override
-    public void storeTempAuthnContextData(String key, String type, Object entry, int tenantId) {
-
-        guard(() -> {
-            long ttlMillis = computeTtlMillis(entry, type, tenantId);
-            if (ttlMillis <= 0) {
-                removeTempAuthnContextData(key, type);
-                return;
-            }
-            writeAuthCtxString(tenantId, key, entry, ttlMillis);
-        });
-    }
-
-    @Override
-    public void removeTempAuthnContextData(String key, String type) {
-
-        guard(() -> {
-            Integer tenantId = lookupTenant(key);
-            if (tenantId == null) {
-                return;
-            }
-            RedisCommands<String, byte[]> redis = connectionManager.sync();
-            redis.unlink(keys.authCtxKey(tenantId, key));
-            redis.del(keys.refKey(key));
-        });
-    }
-
-    // ---------------------------------------------------------------------
     // Write helpers
     // ---------------------------------------------------------------------
 
     /**
-     * Derive the key TTL (ms) from the same validity the JDBC store would use, clamped so sub-ms
-     * rounding never yields 0.
+     * Convert the derived validity (nanoseconds) into a key TTL (milliseconds), clamped so sub-ms
+     * rounding never yields 0. A non-positive validity is returned as-is (already expired).
      */
-    private long computeTtlMillis(Object entry, String type, int tenantId) {
+    private long computeTtlMillis(long validityPeriodNano) {
 
-        long ttlMillis = TimeUnit.NANOSECONDS.toMillis(
-                SessionDataStoreUtils.getValidityPeriodNano(entry, type, tenantId));
+        long ttlMillis = TimeUnit.NANOSECONDS.toMillis(validityPeriodNano);
         if (ttlMillis <= 0) {
             return ttlMillis;
         }

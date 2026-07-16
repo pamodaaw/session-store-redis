@@ -1,108 +1,95 @@
-# Redis Session Store (self-contained incubator bundle)
+# session-store-redis
 
-Realizes the configurable Redis-backed session storage from [`../SPEC.md`](../SPEC.md) and
-[`../design.md`](../design.md). `design.md` is the authority where it and the SPEC disagree.
+Redis-backed session data store for WSO2 Identity Server — a separately-deployable OSGi bundle
+that **extends** the `SessionDataStore` supertype shipped in
+[`carbon-identity-framework`](https://github.com/wso2/carbon-identity-framework). It is an
+**opt-in** replacement for the relational session-data store on the authentication hot path,
+using Redis' native per-key TTL instead of app-side cleanup.
+
+The framework keeps JDBC as the default and has **zero** dependency on this bundle. Dropping the
+bundle in and pointing one config key at it activates Redis; removing it falls back to JDBC with
+no code change.
 
 ## Where the pieces live
 
-The pluggable **SPI** and the **JDBC default** ship inside `carbon-identity-framework`; only the
-**Redis backend** is this self-contained, separately-deployable OSGi bundle.
+In `carbon-identity-framework` (package `...framework.store`), `SessionDataStore` is the abstract
+supertype every caller uses, and `getInstance()` selects the active store; the relational
+`JDBCSessionDataStore` and this bundle's `RedisSessionDataStore` are **peer** implementations at
+the same pluggable level. Callers (`SessionDataStore.getInstance()`) are unchanged.
 
-**In `carbon-identity-framework`** (module `org.wso2.carbon.identity.application.authentication.framework`,
-package `...framework.store`) — all additive, backward-compatible:
-- `SessionStore` — the SPI. Method signatures mirror the existing `SessionDataStore` call sites.
-- `JDBCSessionDataStore` — default backend (`getStoreName()="JDBC"`); a thin adapter that
-  delegates to the unchanged `SessionDataStore` singleton. `isSessionLive` = read-only
-  `getSessionContextData(...) != null`.
-- `SessionDataStoreProvider` — resolves the active store from
-  `JDBCPersistenceManager.SessionDataPersist.SessionStoreImplType` (default `JDBC`); caches it;
-  `WARN` + JDBC fallback when a configured store is absent; `invalidate()` on bind/unbind.
-- `SessionDataStoreUtils` — additive helper exposing TTL derivation
-  (`getValidityPeriodNano`) and serialize/deserialize (delegating to the framework's registered
-  `SessionSerializer`) so external stores match JDBC exactly without touching internals.
-- `FrameworkServiceDataHolder` — a `Map<String,SessionStore>` registry + accessors.
-- `FrameworkServiceComponent` — a `MULTIPLE`/`DYNAMIC` `@Reference(SessionStore)` that collects
-  external stores, and self-registers the JDBC default in `@Activate`.
-- `SessionContextCache` + `AuthenticationContextCache` — the only behavior edit: their store
-  accessor swaps `SessionDataStore.getInstance()` → `SessionDataStoreProvider.getStore()`
-  (arguments unchanged; identical behavior until a Redis store binds).
+## Layout
 
-The existing `SessionDataStore`, `SessionContextDO`, the append-only schema, and the cleanup
-services are **untouched**. The core has **zero** Redis/Lettuce dependency.
+```
+session-store-redis/                                     (this OSGi bundle)
+└── src/main/java/org/wso2/carbon/identity/session/store/redis/
+    ├── RedisSessionDataStore.java                extends SessionDataStore
+    ├── RedisConnectionManager.java               Lettuce client + connection lifecycle
+    ├── RedisKeyBuilder.java                      canonical tenant-inclusive keyspace
+    ├── RedisConstants.java                       config keys, key segments, TTL constants
+    ├── RedisSessionStoreException.java           unchecked failure (fail-closed aware)
+    ├── config/RedisStoreConfig.java              reads identity.xml via IdentityUtil
+    ├── serialize/SessionObjectSerializer.java    serializer seam
+    ├── serialize/JavaSessionObjectSerializer.java  bundle-owned Java serializer
+    └── internal/                                 OSGi activator + data holder
+```
 
-**This bundle** (`session-store-redis`):
-- `RedisSessionDataStore implements SessionStore` (`getStoreName()="Redis"`,
-  `supportsNativeExpiry()=true`): hybrid-hash layout, native per-key TTL written atomically
-  (Lua `HSET`+`PEXPIRE`), `:state` logout marker, tenant-pointer key, `EXISTS` liveness, `DEL`/
-  `UNLINK` clears, `removeExpiredSessionData()` no-op. TTL + (de)serialization go through
-  `SessionDataStoreUtils` for parity with JDBC.
-- `RedisConnectionManager` (Lettuce, standalone), `RedisKeyBuilder` (canonical tenant-inclusive,
-  hash-tagged keys), `RedisConstants`, `RedisStoreConfig` (reads `identity.xml` via
-  `IdentityUtil`), `serialize/*`, `internal/RedisSessionStoreComponent` (DS `@Component` that
-  registers the store as a `SessionStore` OSGi service after `IdentityCoreInitializedEvent`).
-- Depends on the framework artifact (`provided`); embeds Lettuce + Netty so nothing leaks onto
-  the core classpath.
+## How it works
 
-## How a backend is selected
+- **Registration.** `RedisSessionStoreComponent` (`@Component`, ordered after
+  `IdentityCoreInitializedEvent`) registers `RedisSessionDataStore` as a `SessionDataStore` OSGi
+  service. The framework's `session.data.store` reference collects it, and
+  `SessionDataStore.getInstance()` returns it when the configured store type is `Redis`.
+- **Native TTL.** Every key is written atomically with its TTL (single `SET ... PX`, or Lua
+  `HSET`+`PEXPIRE` for the hybrid hash) — no key without an expiry. `removeExpiredSessionData()`
+  is a no-op; Redis evicts expired keys itself.
+- **Parity with JDBC.** `RedisSessionDataStore` derives each record's validity via the inherited
+  `SessionDataStore.getValidityPeriodNano(...)` — the same logic the relational store uses to
+  compute `EXPIRY_TIME` — so lifetimes match. Serialization is owned by this bundle (Java
+  serialization by default); its `ObjectInputStream` resolves classes through the framework
+  bundle's class loader so framework cache-entry classes load across the OSGi boundary.
+- **Keyspace.** `{prefix}:{tenantId}:session:{<sessionId>}:data` (hybrid hash) + `:state`
+  (`ACTIVE`/`LOGGED_OUT`), `{prefix}:{tenantId}:authctx:{contextId}` for auth-flow/temp data, and a
+  small `{prefix}:ref:{id}` tenant-pointer (the reads carry no tenant). Session ids are hash-tagged
+  for Redis Cluster.
 
-`SessionDataStoreProvider.getStore()` reads the configured store name (default `JDBC`). Drop this
-bundle in and set `...SessionStoreImplType = Redis` → the DS component registers the Redis store,
-the framework reference binds it, the provider resolves it. Remove the bundle or revert the
-config → provider falls back to JDBC, no code change.
+## Configuration
+
+Under `JDBCPersistenceManager.SessionDataPersist` in `identity.xml`/`deployment.toml`:
+
+| Property | Default | Meaning |
+|---|---|---|
+| `SessionStoreImplType` | `JDBC` | Set to `Redis` to activate this bundle (read by `SessionDataStore.getInstance()`). |
+| `Redis.Mode` | `standalone` | `standalone` (MVP). `sentinel`/`cluster` are a later iteration. |
+| `Redis.Hosts` | `127.0.0.1:6379` | Comma-separated `host:port`. |
+| `Redis.Username` / `Redis.Password` | – | Redis 6+ ACL user / AUTH password (use secure-vault). |
+| `Redis.Database` | `0` | Logical DB (standalone). |
+| `Redis.SSLEnabled` | `false` | Enable TLS. |
+| `Redis.ConnectionTimeoutMillis` / `Redis.CommandTimeoutMillis` | `2000` / `1000` | Timeouts. |
+| `Redis.KeyPrefix` | `wso2is` | Keyspace prefix. |
+| `Redis.FailureMode` | `fail_closed` | `fail_closed` \| `fail_degraded`. |
 
 ## Build & test
 
-**Framework side** (from the framework repo root):
 ```bash
-mvn -pl components/authentication-framework/org.wso2.carbon.identity.application.authentication.framework -am clean install
+mvn clean install
 ```
-Compiles the SPI/adapter/provider/utils + wiring, passes checkstyle. `install` publishes the
-artifact this bundle compiles against.
 
-**This bundle** (from this dir):
-```bash
-mvn clean test       # unit tests always run; Redis tests use Testcontainers
-mvn clean package    # produces the OSGi bundle with Lettuce + Netty embedded
-```
-**Unit tests (always run, no Docker):**
-- `RedisKeyBuilderTest` — canonical key scheme (tenant in every key, `:data`/`:state`, hash tag).
-- `RedisStoreConfigTest` — config defaults, builder overrides, fail-closed vs fail-degraded decision.
-- `RedisSessionDataStoreConstructionTest` — Sentinel/Cluster reject fast; an unreachable Redis
-  surfaces the fail-closed signal (fail-closed by default, fail-degraded only when opted in).
+Requires the matching `carbon-identity-framework` artifact (see `carbon.identity.framework.version`
+in the parent pom) in the local Maven repo.
+
+**Unit tests (always run, no Docker):** `RedisKeyBuilderTest` (canonical key scheme),
+`RedisStoreConfigTest` (config defaults/overrides, fail-closed vs fail-degraded),
+`RedisSessionDataStoreConstructionTest` (Sentinel/Cluster reject fast; unreachable Redis surfaces
+the fail-closed signal).
 
 **Integration tests (Testcontainers Redis, skipped-not-failed without Docker via
-`@Testcontainers(disabledWithoutDocker = true)`):**
-- `RedisSessionStoreIntegrationTest` — round-trip; TTL-always-set on every key; hybrid-hash fields;
-  tenant-scoped metadata; TTL slide on re-store; sub-second TTL floor; already-expired no-op;
-  native expiry→miss; logout marker + bounded TTL; hard remove (no marker); batch clear; temporary
-  authctx round-trip/remove; absent-read returns null.
+`@Testcontainers(disabledWithoutDocker = true)`):** `RedisSessionStoreIntegrationTest` — round-trip;
+TTL-always-set on every key; hybrid-hash metadata; tenant-scoped keys; TTL slide on re-store;
+sub-second TTL floor; native expiry→miss; logout marker; hard remove; temporary authctx
+round-trip/remove; absent-read returns null.
 
-For the end-to-end / server-level manual scenarios (login, SSO, logout, remember-me, MFA,
-fallback, TLS/AUTH, performance) see [`../docs/manual-test-plan.md`](../docs/manual-test-plan.md).
+## Deferred / roadmap
 
-## Manual verification against a real Redis
-
-```bash
-docker compose -f ../docs/docker-compose.yml up -d
-```
-Then point an IS deployment (or a small harness) at it with
-`...SessionStoreImplType = Redis` + the `...Redis.*` keys, log in, and confirm via
-[`../docs/redis-dev-deployment.md`](../docs/redis-dev-deployment.md) §5: keys appear under
-`wso2is:<tenant>:session:...`, every key has `TTL ≥ 0`, and logout leaves a short-lived
-`:state = LOGGED_OUT`.
-
-## Notable design choices
-
-- **TTL/serialization parity** with JDBC is achieved by routing both through the new
-  `SessionDataStoreUtils` in the framework — the Redis wire format and lifetimes match the DB
-  path, and framework cache-entry classes deserialize with the framework's class loader.
-- **Tenant-pointer key** (`{prefix}:ref:{id}` → tenantId): the SPI reads take only `(key,type)`
-  while the key scheme embeds `tenantId`; a small non-sensitive pointer bridges this. A later
-  iteration can thread the tenant through the cache→store read path and drop it.
-
-## Deferred to later iterations
-
-Management-API liveness wiring (`UserSessionStore.getSessionsTerminated` → `isSessionLive`) +
-orphan reconciliation; Sentinel/Cluster topologies; sorted-set indexes (Option B); metrics/health;
-Kryo/JSON serializers; the `identity.xml.j2`/`*.default.json`/deployment.toml config plumbing;
-routing the other four caches.
+Sentinel & Cluster topologies; sorted-set indexes for session-management list/terminate;
+management-API liveness wiring; metrics & health checks; Kryo/JSON serializers; the
+`identity.xml.j2`/`*.default.json` config plumbing.

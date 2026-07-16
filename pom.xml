@@ -10,9 +10,7 @@
     <packaging>pom</packaging>
     <name>WSO2 IS - Redis Session Store (incubator)</name>
     <description>
-        Self-contained, separately-deployable Redis session-store bundle. Implements the
-        SessionStore SPI that ships in carbon-identity-framework (where the SPI + JDBC default
-        now live). Standalone topology, hybrid-hash value layout, native per-key TTL.
+        Self-contained, separately-deployable Redis session-store bundle. Extends the SessionDataStore supertype that ships in carbon-identity-framework (JDBC and Redis are peer stores). Standalone topology, hybrid-hash value layout, native per-key TTL.
     </description>
 
     <modules>
@@ -23,9 +21,8 @@
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <!-- The framework artifact that provides the SessionStore SPI, SessionContextDO and
-             SessionDataStoreUtils. Bump to match the target IS release. -->
-        <carbon.identity.framework.version>7.11.116-SNAPSHOT</carbon.identity.framework.version>
+        <!-- The framework artifact that provides the SessionDataStore supertype and SessionContextDO. Bump to match the target IS release. -->
+        <carbon.identity.framework.version>7.11.153-SNAPSHOT</carbon.identity.framework.version>
         <carbon.base.version>4.12.22</carbon.base.version>
 
         <lettuce.version>6.3.2.RELEASE</lettuce.version>
