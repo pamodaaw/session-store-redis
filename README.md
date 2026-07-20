@@ -9,46 +9,49 @@ The pluggable **SPI** and the **JDBC default** ship inside `carbon-identity-fram
 **Redis backend** is this self-contained, separately-deployable OSGi bundle.
 
 **In `carbon-identity-framework`** (module `org.wso2.carbon.identity.application.authentication.framework`,
-package `...framework.store`) — all additive, backward-compatible:
-- `SessionStore` — the SPI. Method signatures mirror the existing `SessionDataStore` call sites.
-- `JDBCSessionDataStore` — default backend (`getStoreName()="JDBC"`); a thin adapter that
-  delegates to the unchanged `SessionDataStore` singleton. `isSessionLive` = read-only
-  `getSessionContextData(...) != null`.
-- `SessionDataStoreProvider` — resolves the active store from
-  `JDBCPersistenceManager.SessionDataPersist.SessionStoreImplType` (default `JDBC`); caches it;
-  `WARN` + JDBC fallback when a configured store is absent; `invalidate()` on bind/unbind.
-- `SessionDataStoreUtils` — additive helper exposing TTL derivation
-  (`getValidityPeriodNano`) and serialize/deserialize (delegating to the framework's registered
-  `SessionSerializer`) so external stores match JDBC exactly without touching internals.
-- `FrameworkServiceDataHolder` — a `Map<String,SessionStore>` registry + accessors.
-- `FrameworkServiceComponent` — a `MULTIPLE`/`DYNAMIC` `@Reference(SessionStore)` that collects
-  external stores, and self-registers the JDBC default in `@Activate`.
-- `SessionContextCache` + `AuthenticationContextCache` — the only behavior edit: their store
-  accessor swaps `SessionDataStore.getInstance()` → `SessionDataStoreProvider.getStore()`
-  (arguments unchanged; identical behavior until a Redis store binds).
+package `...framework.store`) — the pluggability contract, backward-compatible for callers:
+- `SessionDataStore` — now the **abstract supertype** every caller uses. `getInstance()` and all
+  public method signatures are unchanged, so call sites keep working. It selects the active store
+  from `JDBCPersistenceManager.SessionDataPersist.SessionStoreImplType` (default `JDBC`), caches it,
+  and `invalidateSelectedStore()` on bind/unbind. Selection is **fail-closed**: a configured
+  non-JDBC store that is not yet registered throws rather than falling back to JDBC (which would
+  split session data across stores). It also exposes the `protected getValidityPeriodNano(...)`
+  helper so native-TTL stores size their expiry exactly as JDBC computes `EXPIRY_TIME`.
+- `JDBCSessionDataStore extends SessionDataStore` — the default relational backend
+  (`getStoreName()="JDBC"`); the existing async queues, schema and cleanup services moved here
+  verbatim.
+- `FrameworkServiceDataHolder` — a `Map<String,SessionDataStore>` registry (keyed by
+  case-insensitive `getStoreName()`) + accessors.
+- `FrameworkServiceComponent` — a `MULTIPLE`/`DYNAMIC` `@Reference(SessionDataStore.class)`
+  (`session.data.store`) that collects external stores and invalidates the cached selection on
+  bind/unbind.
 
-The existing `SessionDataStore`, `SessionContextDO`, the append-only schema, and the cleanup
-services are **untouched**. The core has **zero** Redis/Lettuce dependency.
+The `SessionContextDO`, the append-only schema, and the JDBC cleanup services are **untouched**.
+The core has **zero** Redis/Lettuce dependency and no compile-time reference to any external store.
 
 **This bundle** (`session-store-redis`):
-- `RedisSessionDataStore implements SessionStore` (`getStoreName()="Redis"`,
-  `supportsNativeExpiry()=true`): hybrid-hash layout, native per-key TTL written atomically
-  (Lua `HSET`+`PEXPIRE`), `:state` logout marker, tenant-pointer key, `EXISTS` liveness, `DEL`/
-  `UNLINK` clears, `removeExpiredSessionData()` no-op. TTL + (de)serialization go through
-  `SessionDataStoreUtils` for parity with JDBC.
+- `RedisSessionDataStore extends SessionDataStore` (`getStoreName()="Redis"`): hybrid-hash layout,
+  native per-key TTL written atomically (Lua `HSET`+`PEXPIRE`), `:state` logout marker,
+  tenant-pointer key, `EXISTS` liveness, `DEL`/`UNLINK` clears, `removeExpiredSessionData()` no-op,
+  `stopService()` releases the Lettuce client. TTL derivation reuses the inherited
+  `getValidityPeriodNano(...)` for parity with JDBC.
+- `serialize/JavaSessionObjectSerializer` — self-contained Java serialization, wire-compatible with
+  the framework's `JavaSessionSerializer` blob format, with a class-loader-aware `ObjectInputStream`
+  so framework/application session classes resolve across bundles.
 - `RedisConnectionManager` (Lettuce, standalone), `RedisKeyBuilder` (canonical tenant-inclusive,
   hash-tagged keys), `RedisConstants`, `RedisStoreConfig` (reads `identity.xml` via
-  `IdentityUtil`), `serialize/*`, `internal/RedisSessionStoreComponent` (DS `@Component` that
-  registers the store as a `SessionStore` OSGi service after `IdentityCoreInitializedEvent`).
+  `IdentityUtil`), `internal/RedisSessionStoreComponent` (DS `@Component` that registers the store
+  as a `SessionDataStore` OSGi service after `IdentityCoreInitializedEvent`).
 - Depends on the framework artifact (`provided`); embeds Lettuce + Netty so nothing leaks onto
   the core classpath.
 
 ## How a backend is selected
 
-`SessionDataStoreProvider.getStore()` reads the configured store name (default `JDBC`). Drop this
-bundle in and set `...SessionStoreImplType = Redis` → the DS component registers the Redis store,
-the framework reference binds it, the provider resolves it. Remove the bundle or revert the
-config → provider falls back to JDBC, no code change.
+`SessionDataStore.getInstance()` reads the configured store name (default `JDBC`). Drop this
+bundle in and set `...SessionStoreImplType = Redis` → the DS component registers the Redis store
+under `SessionDataStore.class`, the framework reference binds it and invalidates the cached
+selection, and the next `getInstance()` resolves Redis. While a non-JDBC store is configured but not
+yet bound, resolution fails closed (it does not silently fall back to JDBC).
 
 ## Build & test
 
@@ -56,8 +59,8 @@ config → provider falls back to JDBC, no code change.
 ```bash
 mvn -pl components/authentication-framework/org.wso2.carbon.identity.application.authentication.framework -am clean install
 ```
-Compiles the SPI/adapter/provider/utils + wiring, passes checkstyle. `install` publishes the
-artifact this bundle compiles against.
+Compiles the abstract `SessionDataStore` + `JDBCSessionDataStore` + OSGi wiring, passes checkstyle.
+`install` publishes the artifact this bundle compiles against (framework `7.11.161-SNAPSHOT`).
 
 **This bundle** (from this dir):
 ```bash
@@ -93,9 +96,12 @@ Then point an IS deployment (or a small harness) at it with
 
 ## Notable design choices
 
-- **TTL/serialization parity** with JDBC is achieved by routing both through the new
-  `SessionDataStoreUtils` in the framework — the Redis wire format and lifetimes match the DB
-  path, and framework cache-entry classes deserialize with the framework's class loader.
+- **TTL parity** with JDBC is achieved by reusing the inherited `getValidityPeriodNano(...)` from
+  the abstract `SessionDataStore`, so Redis key lifetimes match the DB `EXPIRY_TIME`.
+- **Serialization parity** with JDBC: `JavaSessionObjectSerializer` writes the same bare
+  `ObjectOutputStream` blob format as the framework's `JavaSessionSerializer`, and a
+  class-loader-aware `ObjectInputStream` resolves framework/application session classes across
+  bundles (tries the thread-context loader, then the framework bundle's loader).
 - **Tenant-pointer key** (`{prefix}:ref:{id}` → tenantId): the SPI reads take only `(key,type)`
   while the key scheme embeds `tenantId`; a small non-sensitive pointer bridges this. A later
   iteration can thread the tenant through the cache→store read path and drop it.

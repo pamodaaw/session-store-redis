@@ -28,8 +28,6 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
-import org.wso2.carbon.identity.application.authentication.framework.internal.FrameworkServiceDataHolder;
-import org.wso2.carbon.identity.application.authentication.framework.store.JavaSessionSerializer;
 import org.wso2.carbon.identity.application.authentication.framework.store.SessionContextDO;
 import org.wso2.carbon.identity.core.cache.CacheEntry;
 import org.wso2.carbon.identity.session.store.redis.config.RedisStoreConfig;
@@ -46,12 +44,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * End-to-end tests for {@link RedisSessionDataStore} against a real Redis (Testcontainers),
- * exercising the framework {@code SessionStore} SPI and the design's TTL / keyspace invariants.
- * Skipped (not failed) when Docker is unavailable so the build stays green (SPEC §9).
+ * exercising the framework {@link org.wso2.carbon.identity.application.authentication.framework.store.SessionDataStore}
+ * SPI and the design's TTL / keyspace invariants. Skipped (not failed) when Docker is unavailable so
+ * the build stays green (SPEC §9).
  *
- * <p>Every store write must be atomic-with-TTL (no key without an expiry), tenant-scoped, and
- * routed through the framework's serializer so the Redis wire format matches the JDBC blob path.
- * These tests assert those guarantees directly against the keyspace.
+ * <p>Every store write must be atomic-with-TTL (no key without an expiry) and tenant-scoped, with a
+ * Java-serialized payload wire-compatible with the JDBC blob path. These tests assert those
+ * guarantees directly against the keyspace.
  */
 @Testcontainers(disabledWithoutDocker = true)
 class RedisSessionStoreIntegrationTest {
@@ -72,9 +71,8 @@ class RedisSessionStoreIntegrationTest {
     @BeforeEach
     void setUp() {
 
-        // The store delegates (de)serialization to the framework's registered serializer.
-        FrameworkServiceDataHolder.getInstance().setSessionSerializer(new JavaSessionSerializer());
-
+        // The store serializes payloads itself (self-contained Java serialization), so no framework
+        // serializer wiring is required here.
         String hostPort = REDIS.getHost() + ":" + REDIS.getMappedPort(6379);
         store = new RedisSessionDataStore(new RedisStoreConfig.Builder().hosts(hostPort).build());
         inspectClient = RedisClient.create("redis://" + hostPort);
@@ -261,7 +259,7 @@ class RedisSessionStoreIntegrationTest {
     void temporaryAuthnContextRoundTripAndTtl() {
 
         String ctxId = "ctx-temp";
-        store.storeTempAuthnContextData(ctxId, TYPE_AUTHCTX, entry("state", TimeUnit.MINUTES.toNanos(5)),
+        store.storeSessionData(ctxId, TYPE_AUTHCTX, entry("state", TimeUnit.MINUTES.toNanos(5)),
                 TENANT);
 
         Object read = store.getSessionData(ctxId, TYPE_AUTHCTX);
@@ -278,7 +276,7 @@ class RedisSessionStoreIntegrationTest {
     void removingTemporaryAuthnContextDeletesItHard() {
 
         String ctxId = "ctx-temp-remove";
-        store.storeTempAuthnContextData(ctxId, TYPE_AUTHCTX, entry("state", TimeUnit.MINUTES.toNanos(5)),
+        store.storeSessionData(ctxId, TYPE_AUTHCTX, entry("state", TimeUnit.MINUTES.toNanos(5)),
                 TENANT);
         store.removeTempAuthnContextData(ctxId, TYPE_AUTHCTX);
 

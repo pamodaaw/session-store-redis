@@ -28,7 +28,7 @@ import org.osgi.service.component.annotations.ReferenceCardinality;
 import org.osgi.service.component.annotations.ReferencePolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.wso2.carbon.identity.application.authentication.framework.store.SessionStore;
+import org.wso2.carbon.identity.application.authentication.framework.store.SessionDataStore;
 import org.wso2.carbon.identity.core.util.IdentityCoreInitializedEvent;
 import org.wso2.carbon.identity.session.store.redis.RedisSessionDataStore;
 
@@ -36,11 +36,13 @@ import org.wso2.carbon.identity.session.store.redis.RedisSessionDataStore;
  * OSGi activator for the Redis session-store bundle.
  *
  * <p>On activation it constructs a {@link RedisSessionDataStore} and registers it as a
- * {@link SessionStore} OSGi service. The framework's {@code session.store} reference
- * ({@code MULTIPLE}/{@code DYNAMIC}) collects it, so {@code SessionDataStoreProvider} can resolve
- * {@code getStoreName() == "Redis"}. Dropping this bundle in and setting the store type to
- * {@code Redis} activates Redis; removing the bundle deregisters the store and the provider falls
- * back to JDBC &mdash; no code change either way.
+ * {@link SessionDataStore} OSGi service. The framework's {@code session.data.store} reference
+ * ({@code MULTIPLE}/{@code DYNAMIC}) collects it into its store registry, so
+ * {@link SessionDataStore#getInstance()} resolves this store when
+ * {@code JDBCPersistenceManager.SessionDataPersist.SessionStoreImplType} is {@code Redis}
+ * ({@code getStoreName() == "Redis"}). Dropping this bundle in and setting the store type to
+ * {@code Redis} activates Redis; removing the bundle deregisters the store &mdash; no code change
+ * either way.
  *
  * <p>The {@code @Reference} on {@link IdentityCoreInitializedEvent} orders activation after the
  * identity core has started.
@@ -59,13 +61,13 @@ public class RedisSessionStoreComponent {
             RedisSessionDataStore store = new RedisSessionDataStore();
             RedisSessionStoreDataHolder.getInstance().setSessionDataStore(store);
             serviceRegistration = context.getBundleContext()
-                    .registerService(SessionStore.class.getName(), store, null);
-            LOG.info("Redis session store registered as SessionStore '{}'.", store.getStoreName());
+                    .registerService(SessionDataStore.class.getName(), store, null);
+            LOG.info("Redis session store registered as SessionDataStore '{}'.", store.getStoreName());
         } catch (RuntimeException e) {
-            // Do not abort the whole runtime if Redis is misconfigured/unreachable; the framework
-            // provider will fall back to JDBC.
-            LOG.error("Failed to activate Redis session store; the framework will fall back to the "
-                    + "default backend.", e);
+            // Do not abort the whole runtime if Redis is misconfigured/unreachable. Note the store is
+            // fail-closed: if it is the configured store, the framework refuses to fall back to JDBC
+            // (to avoid splitting session data) until this service binds.
+            LOG.error("Failed to activate Redis session store.", e);
         }
     }
 

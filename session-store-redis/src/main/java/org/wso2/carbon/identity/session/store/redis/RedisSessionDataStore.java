@@ -25,10 +25,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.wso2.carbon.base.MultitenantConstants;
 import org.wso2.carbon.identity.application.authentication.framework.store.SessionContextDO;
-import org.wso2.carbon.identity.application.authentication.framework.store.SessionDataStoreUtils;
-import org.wso2.carbon.identity.application.authentication.framework.store.SessionStore;
+import org.wso2.carbon.identity.application.authentication.framework.store.SessionDataStore;
 import org.wso2.carbon.identity.session.store.redis.config.RedisStoreConfig;
-import org.wso2.carbon.identity.session.store.redis.serialize.FrameworkSessionObjectSerializer;
+import org.wso2.carbon.identity.session.store.redis.serialize.JavaSessionObjectSerializer;
 import org.wso2.carbon.identity.session.store.redis.serialize.SessionObjectSerializer;
 
 import java.nio.charset.StandardCharsets;
@@ -40,17 +39,23 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
- * Redis-backed {@link SessionStore}. Standalone topology, hybrid-hash value layout, native
+ * Redis-backed {@link SessionDataStore}. Standalone topology, hybrid-hash value layout, native
  * per-key TTL.
+ *
+ * <p><b>Pluggable store.</b> This is a concrete peer of the default relational
+ * {@code JDBCSessionDataStore} under the {@link SessionDataStore} supertype. The bundle registers it
+ * as a {@code SessionDataStore} OSGi service; {@link SessionDataStore#getInstance()} returns it when
+ * {@code JDBCPersistenceManager.SessionDataPersist.SessionStoreImplType} is set to
+ * {@link RedisConstants#STORE_NAME}.
  *
  * <p><b>Native expiry.</b> Every key is written <em>atomically with its TTL</em> &mdash; there is
  * no write path that produces a key without an expiry, so nothing leaks. Redis evicts expired keys
  * itself, so {@link #removeExpiredSessionData()} is a deliberate no-op and no cleanup thread runs
  * for this backend.
  *
- * <p><b>TTL parity with JDBC.</b> The remaining validity is derived from
- * {@link SessionDataStoreUtils#getValidityPeriodNano(Object, String, int)} &mdash; the same logic
- * the JDBC store uses &mdash; then translated into the Redis key TTL.
+ * <p><b>TTL parity with JDBC.</b> The remaining validity is derived from the inherited
+ * {@link SessionDataStore#getValidityPeriodNano(Object, String, int)} &mdash; the same logic the
+ * JDBC store uses &mdash; then translated into the Redis key TTL.
  *
  * <p><b>Hybrid hash.</b> The live SSO session ({@code AppAuthFrameworkSessionContextCache}) is a
  * hash carrying queryable metadata + an opaque {@code payload}; other types (auth-flow/temp) are a
@@ -61,7 +66,7 @@ import java.util.function.Supplier;
  * tenant-pointer key ({@code {prefix}:ref:{id}} &rarr; tenantId, same TTL) written on store and
  * read on lookup.
  */
-public class RedisSessionDataStore implements SessionStore {
+public class RedisSessionDataStore extends SessionDataStore {
 
     private static final Logger LOG = LoggerFactory.getLogger(RedisSessionDataStore.class);
 
@@ -86,7 +91,7 @@ public class RedisSessionDataStore implements SessionStore {
 
         this.connectionManager = new RedisConnectionManager(config);
         this.keys = new RedisKeyBuilder(config.getKeyPrefix());
-        this.serializer = new FrameworkSessionObjectSerializer();
+        this.serializer = new JavaSessionObjectSerializer();
         this.failClosed = config.isFailClosed();
     }
 
@@ -94,12 +99,6 @@ public class RedisSessionDataStore implements SessionStore {
     public String getStoreName() {
 
         return RedisConstants.STORE_NAME;
-    }
-
-    @Override
-    public boolean supportsNativeExpiry() {
-
-        return true;
     }
 
     // ---------------------------------------------------------------------
@@ -234,18 +233,9 @@ public class RedisSessionDataStore implements SessionStore {
     // Temporary auth-flow data
     // ---------------------------------------------------------------------
 
-    @Override
-    public void storeTempAuthnContextData(String key, String type, Object entry, int tenantId) {
-
-        guard(() -> {
-            long ttlMillis = computeTtlMillis(entry, type, tenantId);
-            if (ttlMillis <= 0) {
-                removeTempAuthnContextData(key, type);
-                return;
-            }
-            writeAuthCtxString(tenantId, key, entry, ttlMillis);
-        });
-    }
+    // Temp auth-flow data is written through storeSessionData(key, type, entry, tenantId): a temp
+    // type is not the session-context type, so it lands in the authctx keyspace as a single
+    // TTL-bearing string, exactly as the JDBC store routes temp records through its store path.
 
     @Override
     public void removeTempAuthnContextData(String key, String type) {
@@ -272,7 +262,7 @@ public class RedisSessionDataStore implements SessionStore {
     private long computeTtlMillis(Object entry, String type, int tenantId) {
 
         long ttlMillis = TimeUnit.NANOSECONDS.toMillis(
-                SessionDataStoreUtils.getValidityPeriodNano(entry, type, tenantId));
+                getValidityPeriodNano(entry, type, tenantId));
         if (ttlMillis <= 0) {
             return ttlMillis;
         }
@@ -406,6 +396,17 @@ public class RedisSessionDataStore implements SessionStore {
             op.run();
             return null;
         });
+    }
+
+    /**
+     * Releases the underlying Lettuce client/connection. Invoked by the framework when it stops the
+     * active store ({@link SessionDataStore#getInstance()}.stopService()). Delegates to
+     * {@link #close()}; safe to call more than once.
+     */
+    @Override
+    public void stopService() {
+
+        close();
     }
 
     /**

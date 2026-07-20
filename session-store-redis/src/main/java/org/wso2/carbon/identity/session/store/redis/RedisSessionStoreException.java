@@ -21,7 +21,7 @@ package org.wso2.carbon.identity.session.store.redis;
 /**
  * Unchecked failure raised by the Redis session store.
  *
- * <p>The {@code SessionStore} SPI declares no checked exceptions, so Redis/Lettuce failures and
+ * <p>The {@code SessionDataStore} SPI declares no checked exceptions, so Redis/Lettuce failures and
  * serialization errors are surfaced as this unchecked type. {@link #isFailClosed()} carries the
  * security-relevant signal: under the default {@code fail_closed} policy a hard Redis outage must
  * be treated as "not authenticated" rather than silently degraded.
