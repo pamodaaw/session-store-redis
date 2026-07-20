@@ -90,15 +90,39 @@
                         <!-- Embed Lettuce + Netty (and reactive deps) inside the bundle. -->
                         <Embed-Dependency>lettuce-core,netty-*,reactor-core,reactive-streams;scope=compile|runtime</Embed-Dependency>
                         <Embed-Transitive>true</Embed-Transitive>
+                        <!-- Embedded Lettuce/Netty/Reactor packages must resolve from this bundle's
+                             own classpath, never be imported. If any io.netty.* package is imported,
+                             OSGi can wire it to a different Netty in the runtime while a sibling
+                             package resolves from the embedded jars; the two class spaces then split
+                             and the JVM verifier throws (e.g. DnsAddressResolverGroup not assignable
+                             to AddressResolverGroup). So exclude io.netty.*/io.lettuce.*/reactor.*/
+                             org.reactivestreams.* from Import-Package. The OS-native transports
+                             (epoll/kqueue/io_uring/tcnative) are NOT embedded and are guarded by
+                             Netty reflection, so they stay as genuine optional imports and must be
+                             listed before the io.netty.* exclusion (first match wins). -->
                         <Import-Package>
                             org.wso2.carbon.identity.application.authentication.framework.store,
                             org.wso2.carbon.identity.core.cache,
                             org.osgi.service.component;version="[1.4,2)",
                             org.osgi.service.component.annotations;resolution:=optional,
                             org.slf4j,
+                            io.netty.channel.epoll;resolution:=optional,
+                            io.netty.channel.kqueue;resolution:=optional,
+                            io.netty.incubator.channel.uring;resolution:=optional,
+                            io.netty.internal.tcnative;resolution:=optional,
+                            !io.netty.*,
+                            !io.lettuce.*,
+                            !reactor.*,
+                            !org.reactivestreams.*,
                             *;resolution:=optional
                         </Import-Package>
                         <Export-Package>!*</Export-Package>
+                        <!-- Lettuce/Netty reference JSR-305 annotations, which makes bnd emit a
+                             mandatory `Require-Capability: osgi.contract=JavaAnnotation`. WSO2's
+                             Equinox runtime does not publish that contract, so the bundle would
+                             fail to resolve. Disable bnd contract processing so the header is not
+                             generated. -->
+                        <_contract>!*</_contract>
                     </instructions>
                 </configuration>
             </plugin>

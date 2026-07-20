@@ -66,7 +66,18 @@ class RedisConnectionManager implements AutoCloseable {
         RedisURI uri = buildStandaloneUri(config);
         // Composed codec: String keys/fields, byte[] values -> hybrid hash support.
         RedisCodec<String, byte[]> codec = RedisCodec.of(StringCodec.UTF8, ByteArrayCodec.INSTANCE);
+
+        // Pin the thread-context class loader to this bundle while Lettuce/Netty initialise.
+        // On first client creation Lettuce probes for optional libraries (notably netty's
+        // non-blocking DNS resolver) via the TCCL. In OSGi the activation thread's TCCL may belong
+        // to another bundle that exposes a *different* copy of Netty; loading part of Netty from
+        // there and part from this bundle's embedded copy splits Netty's class space and fails JVM
+        // verification (DnsAddressResolverGroup vs AddressResolverGroup). Pinning the TCCL keeps all
+        // resolution inside this bundle: the DNS resolver is (correctly) seen as absent and Lettuce
+        // falls back to the default resolver bundled here.
+        ClassLoader previousTccl = Thread.currentThread().getContextClassLoader();
         try {
+            Thread.currentThread().setContextClassLoader(RedisConnectionManager.class.getClassLoader());
             this.client = RedisClient.create(uri);
             // Fail fast on connect and per command rather than blocking the auth thread.
             this.client.setOptions(ClientOptions.builder()
@@ -82,6 +93,8 @@ class RedisConnectionManager implements AutoCloseable {
         } catch (RuntimeException e) {
             throw new RedisSessionStoreException(
                     "Failed to connect to Redis at " + config.getHosts(), e, config.isFailClosed());
+        } finally {
+            Thread.currentThread().setContextClassLoader(previousTccl);
         }
     }
 
