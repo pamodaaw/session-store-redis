@@ -56,22 +56,16 @@ yet bound, resolution fails closed (it does not silently fall back to JDBC).
 ## Configuring the Redis backend
 
 Redis settings live under a first-class `<RedisSessionPersistenceManager>` element in `identity.xml`
-(rendered from `identity.xml.j2`), i.e. property keys `RedisSessionPersistenceManager.<Name>`. Each
-key is resolved in priority order:
-
-1. `identity.xml` (via `IdentityUtil.getProperty`) — the normal framework mechanism.
-2. **JVM system property** of the same name — e.g. `-DRedisSessionPersistenceManager.Password=s3cret`.
-3. **Environment variable** derived from the key (non-alphanumerics → `_`, upper-cased) — e.g.
-   `REDISSESSIONPERSISTENCEMANAGER_PASSWORD=s3cret`.
-4. The built-in default.
+(rendered from `identity.xml.j2`), i.e. property keys `RedisSessionPersistenceManager.<Name>`, read
+via `IdentityUtil.getProperty`. Any unset key falls back to its built-in default.
 
 Common keys: `RedisSessionPersistenceManager.Hosts`, `.Username`, `.Password`, `.Database`,
 `.SSLEnabled`, `.KeyPrefix`, `.FailureMode`. The store selection itself is separate and read by the
 framework from `JDBCPersistenceManager.SessionDataPersist.SessionStoreImplType` (set it to `Redis`).
 
-If your Redis has `requirepass` set and none of these channels supplies a password, the client
-connects unauthenticated and Redis rejects the RESP3 `HELLO` with `NOAUTH ...` — set the password
-via one of the channels above.
+If your Redis has `requirepass` set and `RedisSessionPersistenceManager.Password` is unset, the
+client connects unauthenticated and Redis rejects the RESP3 `HELLO` with `NOAUTH ...` — set the
+password in `identity.xml.j2`.
 
 ## Build & test
 
