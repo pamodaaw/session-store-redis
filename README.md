@@ -53,6 +53,24 @@ under `SessionDataStore.class`, the framework reference binds it and invalidates
 selection, and the next `getInstance()` resolves Redis. While a non-JDBC store is configured but not
 yet bound, resolution fails closed (it does not silently fall back to JDBC).
 
+## Configuring the Redis backend
+
+Each `JDBCPersistenceManager.SessionDataPersist.Redis.*` key is resolved in priority order:
+
+1. `identity.xml` (via `IdentityUtil.getProperty`) — the normal framework mechanism.
+2. **JVM system property** of the same name — e.g. `-DJDBCPersistenceManager.SessionDataPersist.Redis.Password=s3cret`.
+3. **Environment variable** derived from the key (non-alphanumerics → `_`, upper-cased) — e.g.
+   `JDBCPERSISTENCEMANAGER_SESSIONDATAPERSIST_REDIS_PASSWORD=s3cret`.
+4. The built-in default.
+
+The system-property / env fallbacks exist because the `deployment.toml`→`identity.xml` template
+plumbing is still deferred (below): until it lands, they are how a deployment supplies the Redis
+**password** (and host, db, timeouts, etc.). Common keys: `...Redis.Hosts`, `...Redis.Username`,
+`...Redis.Password`, `...Redis.Database`, `...Redis.SSLEnabled`, `...Redis.KeyPrefix`,
+`...Redis.FailureMode`. If your Redis has `requirepass` set and none of these supplies a password,
+the client connects unauthenticated and Redis rejects the RESP3 `HELLO` with
+`NOAUTH ...` — set the password via one of the channels above.
+
 ## Build & test
 
 **Framework side** (from the framework repo root):

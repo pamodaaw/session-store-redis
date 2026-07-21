@@ -105,4 +105,30 @@ class RedisStoreConfigTest {
 
         assertTrue(config.isFailClosed());
     }
+
+    @Test
+    void systemPropertyFallbackSuppliesValueWhenIdentityXmlIsAbsent() {
+
+        // With no identity.xml in a unit-test JVM, fromConfig() must pick up a JVM system property
+        // of the same key name. This is the channel a deployment uses to supply the Redis password
+        // without the deployment.toml -> identity.xml template plumbing.
+        String previous = System.getProperty(RedisConstants.CONF_PASSWORD);
+        try {
+            System.setProperty(RedisConstants.CONF_PASSWORD, "sysprop-secret");
+            assertEquals("sysprop-secret", RedisStoreConfig.fromConfig().getPassword());
+        } finally {
+            if (previous == null) {
+                System.clearProperty(RedisConstants.CONF_PASSWORD);
+            } else {
+                System.setProperty(RedisConstants.CONF_PASSWORD, previous);
+            }
+        }
+    }
+
+    @Test
+    void passwordDefaultsToEmptyWhenUnset() {
+
+        // No identity.xml, no system property, no env var -> empty (no AUTH attempted).
+        assertEquals("", RedisStoreConfig.fromConfig().getPassword());
+    }
 }

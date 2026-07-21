@@ -23,9 +23,16 @@ import org.wso2.carbon.identity.core.util.IdentityUtil;
 import org.wso2.carbon.identity.session.store.redis.RedisConstants;
 
 /**
- * Typed, immutable snapshot of the Redis backend configuration, read from {@code identity.xml} via
- * {@link IdentityUtil#getProperty(String)} (the same mechanism the rest of the framework uses).
- * Applies the documented defaults for any unset key.
+ * Typed, immutable snapshot of the Redis backend configuration.
+ *
+ * <p>Each key is resolved in priority order: {@code identity.xml} (via
+ * {@link IdentityUtil#getProperty(String)}, the mechanism the rest of the framework uses), then the
+ * JVM system property of the same name (e.g. {@code -DJDBCPersistenceManager.SessionDataPersist.Redis.Password=...}),
+ * then an environment variable derived from the key (non-alphanumerics to {@code _}, upper-cased, e.g.
+ * {@code JDBCPERSISTENCEMANAGER_SESSIONDATAPERSIST_REDIS_PASSWORD}), and finally the documented
+ * default. The system-property/env fallbacks let a deployment supply configuration (notably the
+ * Redis password) without the {@code deployment.toml}&rarr;{@code identity.xml} template plumbing,
+ * while {@code identity.xml} continues to take precedence when present.
  */
 public final class RedisStoreConfig {
 
@@ -70,13 +77,13 @@ public final class RedisStoreConfig {
         b.masterName = get(RedisConstants.CONF_MASTER_NAME, "");
         b.username = get(RedisConstants.CONF_USERNAME, "");
         b.password = get(RedisConstants.CONF_PASSWORD, "");
-        b.database = parseInt(IdentityUtil.getProperty(RedisConstants.CONF_DATABASE),
+        b.database = parseInt(resolve(RedisConstants.CONF_DATABASE),
                 RedisConstants.DEFAULT_DATABASE);
         b.sslEnabled = Boolean.parseBoolean(get(RedisConstants.CONF_SSL_ENABLED,
                 String.valueOf(RedisConstants.DEFAULT_SSL_ENABLED)));
-        b.connectionTimeoutMs = parseLong(IdentityUtil.getProperty(RedisConstants.CONF_CONNECTION_TIMEOUT_MS),
+        b.connectionTimeoutMs = parseLong(resolve(RedisConstants.CONF_CONNECTION_TIMEOUT_MS),
                 RedisConstants.DEFAULT_CONNECTION_TIMEOUT_MS);
-        b.commandTimeoutMs = parseLong(IdentityUtil.getProperty(RedisConstants.CONF_COMMAND_TIMEOUT_MS),
+        b.commandTimeoutMs = parseLong(resolve(RedisConstants.CONF_COMMAND_TIMEOUT_MS),
                 RedisConstants.DEFAULT_COMMAND_TIMEOUT_MS);
         b.keyPrefix = get(RedisConstants.CONF_KEY_PREFIX, RedisConstants.DEFAULT_KEY_PREFIX);
         b.serializer = get(RedisConstants.CONF_SERIALIZER, RedisConstants.DEFAULT_SERIALIZER);
@@ -86,8 +93,37 @@ public final class RedisStoreConfig {
 
     private static String get(String key, String defaultValue) {
 
-        String value = IdentityUtil.getProperty(key);
+        String value = resolve(key);
         return StringUtils.isBlank(value) ? defaultValue : value;
+    }
+
+    /**
+     * Resolves a config key from {@code identity.xml}, then the JVM system property of the same name,
+     * then the derived environment variable. Returns {@code null} if none is set (so callers apply
+     * their default). {@code identity.xml} always wins when present.
+     */
+    private static String resolve(String key) {
+
+        String value = IdentityUtil.getProperty(key);
+        if (StringUtils.isNotBlank(value)) {
+            return value;
+        }
+        value = System.getProperty(key);
+        if (StringUtils.isNotBlank(value)) {
+            return value;
+        }
+        return System.getenv(toEnvVar(key));
+    }
+
+    /**
+     * Derives the environment-variable name for a config key: every non-alphanumeric character
+     * becomes {@code _} and the result is upper-cased (e.g.
+     * {@code JDBCPersistenceManager.SessionDataPersist.Redis.Password} &rarr;
+     * {@code JDBCPERSISTENCEMANAGER_SESSIONDATAPERSIST_REDIS_PASSWORD}).
+     */
+    private static String toEnvVar(String key) {
+
+        return key.replaceAll("[^A-Za-z0-9]", "_").toUpperCase(java.util.Locale.ENGLISH);
     }
 
     private static int parseInt(String value, int fallback) {
