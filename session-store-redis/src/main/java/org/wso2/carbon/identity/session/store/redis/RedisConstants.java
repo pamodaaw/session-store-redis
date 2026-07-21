@@ -20,7 +20,8 @@ package org.wso2.carbon.identity.session.store.redis;
 
 /**
  * Config keys, key-prefix defaults, hybrid-hash field names and tuning constants for the Redis
- * store. Config keys mirror the design's {@code deployment.toml} names (design §8.3) verbatim.
+ * store. Config keys resolve under the first-class {@code <RedisSessionPersistenceManager>} element
+ * in {@code identity.xml} (i.e. {@code RedisSessionPersistenceManager.<Name>}).
  */
 public final class RedisConstants {
 
@@ -32,9 +33,13 @@ public final class RedisConstants {
     public static final String STORE_NAME = "Redis";
 
     // ---- Config keys: identity.xml property paths read via IdentityUtil.getProperty(...).
-    // The deployment.toml session_data.redis.* keys map onto these under
-    // JDBCPersistenceManager.SessionDataPersist.Redis (the j2/default.json plumbing is deferred). ----
-    private static final String CONF_PREFIX = "JDBCPersistenceManager.SessionDataPersist.Redis.";
+    // The Redis settings live under the first-class <RedisSessionPersistenceManager> element in
+    // identity.xml (rendered from identity.xml.j2), so each property path is
+    // "RedisSessionPersistenceManager.<Name>". IdentityConfigParser keys nested elements as
+    // parent.child, so CONF_PREFIX MUST keep its trailing '.' — without it the keys would collapse
+    // to "RedisSessionPersistenceManager<Name>" and never match. (SessionStoreImplType is separate:
+    // the framework reads it from JDBCPersistenceManager.SessionDataPersist.SessionStoreImplType.)
+    private static final String CONF_PREFIX = "RedisSessionPersistenceManager.";
     public static final String CONF_MODE = CONF_PREFIX + "Mode";
     public static final String CONF_HOSTS = CONF_PREFIX + "Hosts";
     public static final String CONF_MASTER_NAME = CONF_PREFIX + "MasterName";

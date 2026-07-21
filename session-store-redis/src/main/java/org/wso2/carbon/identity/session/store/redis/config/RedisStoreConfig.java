@@ -27,12 +27,12 @@ import org.wso2.carbon.identity.session.store.redis.RedisConstants;
  *
  * <p>Each key is resolved in priority order: {@code identity.xml} (via
  * {@link IdentityUtil#getProperty(String)}, the mechanism the rest of the framework uses), then the
- * JVM system property of the same name (e.g. {@code -DJDBCPersistenceManager.SessionDataPersist.Redis.Password=...}),
+ * JVM system property of the same name (e.g. {@code -DRedisSessionPersistenceManager.Password=...}),
  * then an environment variable derived from the key (non-alphanumerics to {@code _}, upper-cased, e.g.
- * {@code JDBCPERSISTENCEMANAGER_SESSIONDATAPERSIST_REDIS_PASSWORD}), and finally the documented
- * default. The system-property/env fallbacks let a deployment supply configuration (notably the
- * Redis password) without the {@code deployment.toml}&rarr;{@code identity.xml} template plumbing,
- * while {@code identity.xml} continues to take precedence when present.
+ * {@code REDISSESSIONPERSISTENCEMANAGER_PASSWORD}), and finally the documented default. The
+ * system-property/env fallbacks let a deployment supply configuration (notably the Redis password)
+ * without the {@code identity.xml.j2} template, while {@code identity.xml} continues to take
+ * precedence when present.
  */
 public final class RedisStoreConfig {
 
@@ -118,8 +118,8 @@ public final class RedisStoreConfig {
     /**
      * Derives the environment-variable name for a config key: every non-alphanumeric character
      * becomes {@code _} and the result is upper-cased (e.g.
-     * {@code JDBCPersistenceManager.SessionDataPersist.Redis.Password} &rarr;
-     * {@code JDBCPERSISTENCEMANAGER_SESSIONDATAPERSIST_REDIS_PASSWORD}).
+     * {@code RedisSessionPersistenceManager.Password} &rarr;
+     * {@code REDISSESSIONPERSISTENCEMANAGER_PASSWORD}).
      */
     private static String toEnvVar(String key) {
 

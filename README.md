@@ -55,21 +55,23 @@ yet bound, resolution fails closed (it does not silently fall back to JDBC).
 
 ## Configuring the Redis backend
 
-Each `JDBCPersistenceManager.SessionDataPersist.Redis.*` key is resolved in priority order:
+Redis settings live under a first-class `<RedisSessionPersistenceManager>` element in `identity.xml`
+(rendered from `identity.xml.j2`), i.e. property keys `RedisSessionPersistenceManager.<Name>`. Each
+key is resolved in priority order:
 
 1. `identity.xml` (via `IdentityUtil.getProperty`) — the normal framework mechanism.
-2. **JVM system property** of the same name — e.g. `-DJDBCPersistenceManager.SessionDataPersist.Redis.Password=s3cret`.
+2. **JVM system property** of the same name — e.g. `-DRedisSessionPersistenceManager.Password=s3cret`.
 3. **Environment variable** derived from the key (non-alphanumerics → `_`, upper-cased) — e.g.
-   `JDBCPERSISTENCEMANAGER_SESSIONDATAPERSIST_REDIS_PASSWORD=s3cret`.
+   `REDISSESSIONPERSISTENCEMANAGER_PASSWORD=s3cret`.
 4. The built-in default.
 
-The system-property / env fallbacks exist because the `deployment.toml`→`identity.xml` template
-plumbing is still deferred (below): until it lands, they are how a deployment supplies the Redis
-**password** (and host, db, timeouts, etc.). Common keys: `...Redis.Hosts`, `...Redis.Username`,
-`...Redis.Password`, `...Redis.Database`, `...Redis.SSLEnabled`, `...Redis.KeyPrefix`,
-`...Redis.FailureMode`. If your Redis has `requirepass` set and none of these supplies a password,
-the client connects unauthenticated and Redis rejects the RESP3 `HELLO` with
-`NOAUTH ...` — set the password via one of the channels above.
+Common keys: `RedisSessionPersistenceManager.Hosts`, `.Username`, `.Password`, `.Database`,
+`.SSLEnabled`, `.KeyPrefix`, `.FailureMode`. The store selection itself is separate and read by the
+framework from `JDBCPersistenceManager.SessionDataPersist.SessionStoreImplType` (set it to `Redis`).
+
+If your Redis has `requirepass` set and none of these channels supplies a password, the client
+connects unauthenticated and Redis rejects the RESP3 `HELLO` with `NOAUTH ...` — set the password
+via one of the channels above.
 
 ## Build & test
 
