@@ -57,6 +57,10 @@ class RedisSessionStoreIntegrationTest {
 
     private static final String TYPE_SESSION = "AppAuthFrameworkSessionContextCache";
     private static final String TYPE_AUTHCTX = "AuthenticationContextCache";
+    // Two non-session-context caches that are keyed by the same session-data key value in the real
+    // product (OAuth SessionDataCache and the framework AuthenticationResultCache).
+    private static final String TYPE_SESSION_DATA_CACHE = "SessionDataCache";
+    private static final String TYPE_AUTH_RESULT_CACHE = "AuthenticationResultCache";
     private static final int TENANT = 1;
     private static final String PREFIX = "wso2is";
 
@@ -108,7 +112,7 @@ class RedisSessionStoreIntegrationTest {
 
         RedisCommands<String, String> redis = inspect.sync();
         for (String key : new String[]{
-                dataKey(TENANT, sid), stateKey(TENANT, sid), refKey(sid)}) {
+                dataKey(TENANT, sid), stateKey(TENANT, sid), refKey(TYPE_SESSION, sid)}) {
             assertEquals(1L, redis.exists(key), "expected key to exist: " + key);
             assertTrue(redis.ttl(key) >= 0, "every key must carry a TTL (never -1): " + key);
         }
@@ -234,7 +238,7 @@ class RedisSessionStoreIntegrationTest {
         RedisCommands<String, String> redis = inspect.sync();
         assertEquals(0L, redis.exists(dataKey(TENANT, sid)), "data must be gone");
         assertEquals(0L, redis.exists(stateKey(TENANT, sid)), "hard remove leaves no LOGGED_OUT marker");
-        assertEquals(0L, redis.exists(refKey(sid)), "tenant pointer must be deleted");
+        assertEquals(0L, redis.exists(refKey(TYPE_SESSION, sid)), "tenant pointer must be deleted");
     }
 
     @Test
@@ -267,8 +271,8 @@ class RedisSessionStoreIntegrationTest {
         assertEquals("state", ((TestEntry) read).getPayload());
 
         RedisCommands<String, String> redis = inspect.sync();
-        assertEquals(1L, redis.exists(authCtxKey(TENANT, ctxId)));
-        assertTrue(redis.ttl(authCtxKey(TENANT, ctxId)) >= 0, "authctx key must carry a TTL");
+        assertEquals(1L, redis.exists(authCtxKey(TENANT, TYPE_AUTHCTX, ctxId)));
+        assertTrue(redis.ttl(authCtxKey(TENANT, TYPE_AUTHCTX, ctxId)) >= 0, "authctx key must carry a TTL");
         assertTrue(store.isSessionLive(ctxId, TYPE_AUTHCTX));
     }
 
@@ -282,8 +286,8 @@ class RedisSessionStoreIntegrationTest {
 
         assertNull(store.getSessionData(ctxId, TYPE_AUTHCTX));
         RedisCommands<String, String> redis = inspect.sync();
-        assertEquals(0L, redis.exists(authCtxKey(TENANT, ctxId)));
-        assertEquals(0L, redis.exists(refKey(ctxId)));
+        assertEquals(0L, redis.exists(authCtxKey(TENANT, TYPE_AUTHCTX, ctxId)));
+        assertEquals(0L, redis.exists(refKey(TYPE_AUTHCTX, ctxId)));
     }
 
     @Test
@@ -297,8 +301,39 @@ class RedisSessionStoreIntegrationTest {
         assertEquals(TYPE_AUTHCTX, dataObject.getType());
         // authctx records land under the authctx keyspace, not the session hash.
         RedisCommands<String, String> redis = inspect.sync();
-        assertEquals(1L, redis.exists(authCtxKey(TENANT, ctxId)));
+        assertEquals(1L, redis.exists(authCtxKey(TENANT, TYPE_AUTHCTX, ctxId)));
         assertEquals(0L, redis.exists(dataKey(TENANT, ctxId)));
+    }
+
+    @Test
+    void sameKeyUnderDifferentTypesDoesNotCollide() {
+
+        // Regression: the framework primary key is (key, type). Two caches storing under the same
+        // key value but different types must not overwrite each other. Before type was part of the
+        // Redis key, the second store clobbered the first and a read returned the wrong type's entry
+        // (AuthenticationResultCacheEntry cannot be cast to SessionDataCacheEntry).
+        String sharedKey = "shared-session-data-key";
+        store.storeSessionData(sharedKey, TYPE_SESSION_DATA_CACHE,
+                entry("session-data-entry", TimeUnit.MINUTES.toNanos(5)), TENANT);
+        store.storeSessionData(sharedKey, TYPE_AUTH_RESULT_CACHE,
+                entry("auth-result-entry", TimeUnit.MINUTES.toNanos(5)), TENANT);
+
+        // Each type must read back its own entry, uncontaminated by the other.
+        assertEquals("session-data-entry",
+                ((TestEntry) store.getSessionData(sharedKey, TYPE_SESSION_DATA_CACHE)).getPayload());
+        assertEquals("auth-result-entry",
+                ((TestEntry) store.getSessionData(sharedKey, TYPE_AUTH_RESULT_CACHE)).getPayload());
+
+        // They occupy distinct Redis keys.
+        RedisCommands<String, String> redis = inspect.sync();
+        assertEquals(1L, redis.exists(authCtxKey(TENANT, TYPE_SESSION_DATA_CACHE, sharedKey)));
+        assertEquals(1L, redis.exists(authCtxKey(TENANT, TYPE_AUTH_RESULT_CACHE, sharedKey)));
+
+        // Clearing one type must leave the other intact.
+        store.clearSessionData(sharedKey, TYPE_SESSION_DATA_CACHE);
+        assertNull(store.getSessionData(sharedKey, TYPE_SESSION_DATA_CACHE));
+        assertEquals("auth-result-entry",
+                ((TestEntry) store.getSessionData(sharedKey, TYPE_AUTH_RESULT_CACHE)).getPayload());
     }
 
     @Test
@@ -321,14 +356,14 @@ class RedisSessionStoreIntegrationTest {
         return PREFIX + ":" + tenant + ":session:{" + sid + "}:state";
     }
 
-    private static String authCtxKey(int tenant, String ctxId) {
+    private static String authCtxKey(int tenant, String type, String ctxId) {
 
-        return PREFIX + ":" + tenant + ":authctx:" + ctxId;
+        return PREFIX + ":" + tenant + ":authctx:" + type + ":" + ctxId;
     }
 
-    private static String refKey(String id) {
+    private static String refKey(String type, String id) {
 
-        return PREFIX + ":ref:" + id;
+        return PREFIX + ":ref:" + type + ":" + id;
     }
 
     private static TestEntry entry(String payload, long validityNano) {

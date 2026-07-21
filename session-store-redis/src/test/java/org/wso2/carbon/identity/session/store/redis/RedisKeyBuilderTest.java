@@ -21,6 +21,7 @@ package org.wso2.carbon.identity.session.store.redis;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -50,10 +51,25 @@ class RedisKeyBuilderTest {
     }
 
     @Test
-    void authCtxAndRefKeys() {
+    void authCtxAndRefKeysIncludeType() {
 
-        assertEquals("wso2is:5:authctx:ctx-1", keys.authCtxKey(5, "ctx-1"));
-        assertEquals("wso2is:ref:ctx-1", keys.refKey("ctx-1"));
+        assertEquals("wso2is:5:authctx:SessionDataCache:ctx-1",
+                keys.authCtxKey(5, "SessionDataCache", "ctx-1"));
+        assertEquals("wso2is:ref:SessionDataCache:ctx-1",
+                keys.refKey("SessionDataCache", "ctx-1"));
+    }
+
+    @Test
+    void sameIdUnderDifferentTypesYieldsDistinctKeys() {
+
+        // The composite (key, type) is the logical primary key: the same id under two cache types
+        // must map to different Redis keys, or the two caches collide (last-write-wins).
+        String sessionDataCacheKey = keys.authCtxKey(1, "SessionDataCache", "shared-id");
+        String authResultCacheKey = keys.authCtxKey(1, "AuthenticationResultCache", "shared-id");
+        assertNotEquals(sessionDataCacheKey, authResultCacheKey);
+
+        assertNotEquals(keys.refKey("SessionDataCache", "shared-id"),
+                keys.refKey("AuthenticationResultCache", "shared-id"));
     }
 
     @Test

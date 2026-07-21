@@ -120,9 +120,16 @@ Then point an IS deployment (or a small harness) at it with
   `ObjectOutputStream` blob format as the framework's `JavaSessionSerializer`, and a
   class-loader-aware `ObjectInputStream` resolves framework/application session classes across
   bundles (tries the thread-context loader, then the framework bundle's loader).
-- **Tenant-pointer key** (`{prefix}:ref:{id}` → tenantId): the SPI reads take only `(key,type)`
-  while the key scheme embeds `tenantId`; a small non-sensitive pointer bridges this. A later
-  iteration can thread the tenant through the cache→store read path and drop it.
+- **Composite `(key, type)` identity**: the framework's logical primary key is `(key, type)`, so
+  the `authctx` data keys and the `ref` pointer both include `type`
+  (`{prefix}:{tenantId}:authctx:{type}:{contextId}`, `{prefix}:ref:{type}:{id}`). Without it, caches
+  that share a `key` value under different types (e.g. `SessionDataCache` and
+  `AuthenticationResultCache`) collided last-write-wins and a read returned the wrong type →
+  `ClassCastException`. The session-context hybrid-hash keyspace is unchanged (only one type uses it).
+- **Tenant-pointer key** (`{prefix}:ref:{type}:{id}` → tenantId): the SPI reads take only
+  `(key, type)` while the data keys embed `tenantId`; a small non-sensitive, `(type,id)`-scoped
+  pointer bridges this. A later iteration can thread the tenant through the cache→store read path
+  and drop it.
 
 ## Deferred to later iterations
 

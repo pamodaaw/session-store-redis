@@ -63,8 +63,9 @@ import java.util.function.Supplier;
  *
  * <p><b>Tenant resolution.</b> The SPI reads take only {@code (key, type)} but the canonical key
  * scheme embeds {@code tenantId} in every data key. This is bridged by a small, non-sensitive
- * tenant-pointer key ({@code {prefix}:ref:{id}} &rarr; tenantId, same TTL) written on store and
- * read on lookup.
+ * tenant-pointer key ({@code {prefix}:ref:{type}:{id}} &rarr; tenantId, same TTL) written on store
+ * and read on lookup. The pointer is scoped by {@code (type, id)} so caches that share an {@code id}
+ * value under different types resolve independently.
  */
 public class RedisSessionDataStore extends SessionDataStore {
 
@@ -124,7 +125,7 @@ public class RedisSessionDataStore extends SessionDataStore {
             if (isSessionContextType(type)) {
                 writeHybridHash(tenantId, key, entry, ttlMillis);
             } else {
-                writeAuthCtxString(tenantId, key, entry, ttlMillis);
+                writeAuthCtxString(tenantId, type, key, entry, ttlMillis);
             }
         });
     }
@@ -140,7 +141,7 @@ public class RedisSessionDataStore extends SessionDataStore {
     public SessionContextDO getSessionContextData(String key, String type) {
 
         return guard(() -> {
-            Integer tenantId = lookupTenant(key);
+            Integer tenantId = lookupTenant(type, key);
             if (tenantId == null) {
                 return null; // pointer gone => record missing or expired
             }
@@ -154,7 +155,7 @@ public class RedisSessionDataStore extends SessionDataStore {
     public void clearSessionData(String key, String type) {
 
         guard(() -> {
-            Integer tenantId = lookupTenant(key);
+            Integer tenantId = lookupTenant(type, key);
             if (tenantId == null) {
                 return; // already gone -> no-op
             }
@@ -169,10 +170,10 @@ public class RedisSessionDataStore extends SessionDataStore {
                         bytes(RedisConstants.STATE_LOGGED_OUT),
                         SetArgs.Builder.px(RedisConstants.LOGGED_OUT_MARKER_TTL_MILLIS));
             } else {
-                redis.unlink(keys.authCtxKey(tenantId, key));
+                redis.unlink(keys.authCtxKey(tenantId, type, key));
             }
             // Bound the pointer's remaining life; reads meanwhile find the data gone -> missing.
-            redis.pexpire(keys.refKey(key), RedisConstants.LOGGED_OUT_MARKER_TTL_MILLIS);
+            redis.pexpire(keys.refKey(type, key), RedisConstants.LOGGED_OUT_MARKER_TTL_MILLIS);
         });
     }
 
@@ -192,7 +193,7 @@ public class RedisSessionDataStore extends SessionDataStore {
 
         // Single key per record: nanoTime is irrelevant. Hard removal (no LOGGED_OUT marker).
         guard(() -> {
-            Integer tenantId = lookupTenant(key);
+            Integer tenantId = lookupTenant(type, key);
             if (tenantId == null) {
                 return;
             }
@@ -201,9 +202,9 @@ public class RedisSessionDataStore extends SessionDataStore {
                 redis.unlink(this.keys.sessionDataKey(tenantId, key),
                         this.keys.sessionStateKey(tenantId, key));
             } else {
-                redis.unlink(this.keys.authCtxKey(tenantId, key));
+                redis.unlink(this.keys.authCtxKey(tenantId, type, key));
             }
-            redis.del(this.keys.refKey(key));
+            redis.del(this.keys.refKey(type, key));
         });
     }
 
@@ -217,13 +218,13 @@ public class RedisSessionDataStore extends SessionDataStore {
     public boolean isSessionLive(String key, String type) {
 
         return guard(() -> {
-            Integer tenantId = lookupTenant(key);
+            Integer tenantId = lookupTenant(type, key);
             if (tenantId == null) {
                 return false;
             }
             String dataKey = isSessionContextType(type)
                     ? keys.sessionDataKey(tenantId, key)
-                    : keys.authCtxKey(tenantId, key);
+                    : keys.authCtxKey(tenantId, type, key);
             // EXISTS only -> O(1), no deserialization.
             return connectionManager.sync().exists(dataKey) > 0;
         });
@@ -241,13 +242,13 @@ public class RedisSessionDataStore extends SessionDataStore {
     public void removeTempAuthnContextData(String key, String type) {
 
         guard(() -> {
-            Integer tenantId = lookupTenant(key);
+            Integer tenantId = lookupTenant(type, key);
             if (tenantId == null) {
                 return;
             }
             RedisCommands<String, byte[]> redis = connectionManager.sync();
-            redis.unlink(keys.authCtxKey(tenantId, key));
-            redis.del(keys.refKey(key));
+            redis.unlink(keys.authCtxKey(tenantId, type, key));
+            redis.del(keys.refKey(type, key));
         });
     }
 
@@ -292,20 +293,21 @@ public class RedisSessionDataStore extends SessionDataStore {
 
         redis.set(keys.sessionStateKey(tenantId, sessionId), bytes(RedisConstants.STATE_ACTIVE),
                 SetArgs.Builder.px(ttlMillis));
-        writePointer(sessionId, tenantId, ttlMillis);
+        writePointer(RedisConstants.TYPE_SESSION_CONTEXT, sessionId, tenantId, ttlMillis);
     }
 
-    private void writeAuthCtxString(int tenantId, String contextId, Object entry, long ttlMillis) {
+    private void writeAuthCtxString(int tenantId, String type, String contextId, Object entry,
+                                    long ttlMillis) {
 
         // Single SET ... PX: value and TTL land together, atomically.
-        connectionManager.sync().set(keys.authCtxKey(tenantId, contextId),
+        connectionManager.sync().set(keys.authCtxKey(tenantId, type, contextId),
                 serializer.serialize(entry), SetArgs.Builder.px(ttlMillis));
-        writePointer(contextId, tenantId, ttlMillis);
+        writePointer(type, contextId, tenantId, ttlMillis);
     }
 
-    private void writePointer(String id, int tenantId, long ttlMillis) {
+    private void writePointer(String type, String id, int tenantId, long ttlMillis) {
 
-        connectionManager.sync().set(keys.refKey(id), bytes(String.valueOf(tenantId)),
+        connectionManager.sync().set(keys.refKey(type, id), bytes(String.valueOf(tenantId)),
                 SetArgs.Builder.px(ttlMillis));
     }
 
@@ -328,16 +330,16 @@ public class RedisSessionDataStore extends SessionDataStore {
 
     private SessionContextDO readAuthCtxString(int tenantId, String contextId, String type) {
 
-        byte[] value = connectionManager.sync().get(keys.authCtxKey(tenantId, contextId));
+        byte[] value = connectionManager.sync().get(keys.authCtxKey(tenantId, type, contextId));
         if (value == null) {
             return null;
         }
         return new SessionContextDO(contextId, type, serializer.deserialize(value), 0L, tenantId);
     }
 
-    private Integer lookupTenant(String id) {
+    private Integer lookupTenant(String type, String id) {
 
-        byte[] value = connectionManager.sync().get(keys.refKey(id));
+        byte[] value = connectionManager.sync().get(keys.refKey(type, id));
         if (value == null) {
             return null;
         }
