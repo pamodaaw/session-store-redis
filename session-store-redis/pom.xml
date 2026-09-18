@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.wso2.carbon.identity.session.store</groupId>
+        <artifactId>session-store-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>session-store-redis</artifactId>
+    <!-- OSGi bundle: maven-bundle-plugin embeds Lettuce and Netty so they never leak onto the
+         core classpath. -->
+    <packaging>bundle</packaging>
+    <name>WSO2 IS - Session Store Redis (incubator bundle)</name>
+    <description>
+        Redis backed session store for WSO2 Identity Server. Registers a SessionDataStore and a
+        UserSessionDAO, which the framework selects through the SessionStoreImplType configuration.
+        Supports the standalone, sentinel and cluster topologies.
+    </description>
+
+    <dependencies>
+        <!-- SessionDataStore supertype + SessionContextDO. provided: supplied at runtime by the
+             already-deployed framework bundle, never embedded. -->
+        <dependency>
+            <groupId>org.wso2.carbon.identity.framework</groupId>
+            <artifactId>org.wso2.carbon.identity.application.authentication.framework</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <!-- provided dependencies are not transitive, so the ones used directly are named:
+             identity.core for IdentityUtil and carbon.base for MultitenantConstants. -->
+        <dependency>
+            <groupId>org.wso2.carbon.identity.framework</groupId>
+            <artifactId>org.wso2.carbon.identity.core</artifactId>
+            <version>${carbon.identity.framework.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.wso2.carbon</groupId>
+            <artifactId>org.wso2.carbon.base</artifactId>
+            <version>${carbon.kernel.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.lettuce</groupId>
+            <artifactId>lettuce-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- OSGi declarative-services annotations: compile-only. -->
+        <dependency>
+            <groupId>org.osgi</groupId>
+            <artifactId>org.osgi.service.component.annotations</artifactId>
+            <version>${osgi.annotations.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Tests. -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.felix</groupId>
+                <artifactId>maven-bundle-plugin</artifactId>
+                <configuration>
+                    <instructions>
+                        <Bundle-SymbolicName>org.wso2.carbon.identity.session.store.redis</Bundle-SymbolicName>
+                        <!-- Embed Lettuce + Netty (and reactive deps) inside the bundle. -->
+                        <Embed-Dependency>lettuce-core,netty-*,reactor-core,reactive-streams;scope=compile|runtime</Embed-Dependency>
+                        <Embed-Transitive>true</Embed-Transitive>
+                        <!-- Embedded Lettuce/Netty/Reactor packages must resolve from this bundle's
+                             own classpath, never be imported. If any io.netty.* package is imported,
+                             OSGi can wire it to a different Netty in the runtime while a sibling
+                             package resolves from the embedded jars; the two class spaces then split
+                             and the JVM verifier throws (e.g. DnsAddressResolverGroup not assignable
+                             to AddressResolverGroup). So exclude io.netty.*/io.lettuce.*/reactor.*/
+                             org.reactivestreams.* from Import-Package. The OS-native transports
+                             (epoll/kqueue/io_uring/tcnative) are NOT embedded and are guarded by
+                             Netty reflection, so they stay as genuine optional imports and must be
+                             listed before the io.netty.* exclusion (first match wins). -->
+                        <!-- Every package the bundle needs is listed so that a runtime missing one
+                             fails to resolve at install time, rather than with a NoClassDefFoundError on
+                             the first session operation. -->
+                        <Import-Package>
+                            org.wso2.carbon.identity.application.authentication.framework.store,
+                            org.wso2.carbon.identity.application.authentication.framework.exception,
+                            org.wso2.carbon.identity.application.authentication.framework.exception.session.mgt,
+                            org.wso2.carbon.identity.application.authentication.framework.util,
+                            org.wso2.carbon.identity.application.authentication.framework.dao,
+                            org.wso2.carbon.identity.application.authentication.framework.model,
+                            org.wso2.carbon.identity.application.authentication.framework.context,
+                            org.wso2.carbon.identity.application.common.model,
+                            org.wso2.carbon.identity.core.model,
+                            org.wso2.carbon.identity.core.util,
+                            org.wso2.carbon.database.utils.jdbc.exceptions,
+                            org.wso2.carbon.idp.mgt.util,
+                            org.wso2.carbon.base,
+                            org.apache.commons.lang,
+                            org.apache.commons.logging,
+                            org.osgi.framework,
+                            org.osgi.service.component;version="[1.4,2)",
+                            org.osgi.service.component.annotations;resolution:=optional,
+                            org.slf4j,
+                            io.netty.channel.epoll;resolution:=optional,
+                            io.netty.channel.kqueue;resolution:=optional,
+                            io.netty.incubator.channel.uring;resolution:=optional,
+                            io.netty.internal.tcnative;resolution:=optional,
+                            !io.netty.*,
+                            !io.lettuce.*,
+                            !reactor.*,
+                            !org.reactivestreams.*,
+                            *;resolution:=optional
+                        </Import-Package>
+                        <Export-Package>!*</Export-Package>
+                        <!-- Lettuce/Netty reference JSR-305 annotations, which makes bnd emit a
+                             mandatory `Require-Capability: osgi.contract=JavaAnnotation`. WSO2's
+                             Equinox runtime does not publish that contract, so the bundle would
+                             fail to resolve. Disable bnd contract processing so the header is not
+                             generated. -->
+                        <_contract>!*</_contract>
+                    </instructions>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

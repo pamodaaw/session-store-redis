@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
+  ~
+  ~ WSO2 LLC. licenses this file to you under the Apache License,
+  ~ Version 2.0 (the "License"); you may not use this file except
+  ~ in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing,
+  ~ software distributed under the License is distributed on an
+  ~ "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  ~ KIND, either express or implied. See the License for the
+  ~ specific language governing permissions and limitations
+  ~ under the License.
+  -->
+<FindBugsFilter>
+
+    <!--
+      The OSGi data holder deliberately hands out the live service objects it was given. These are
+      singleton services registered by the service component, not value objects, so a defensive copy
+      would hand out a different store than the one the container registered. The same reasoning
+      applies to the unsynchronized instance getter: INSTANCE is a final field initialised at class
+      load, so the getter has nothing to synchronize on.
+    -->
+    <Match>
+        <Class name="org.wso2.carbon.identity.session.store.redis.internal.RedisSessionStoreDataHolder" />
+        <Or>
+            <Bug pattern="EI_EXPOSE_REP" />
+            <Bug pattern="EI_EXPOSE_REP2" />
+            <Bug pattern="MS_EXPOSE_REP" />
+            <Bug pattern="SING_SINGLETON_GETTER_NOT_SYNCHRONIZED" />
+        </Or>
+    </Match>
+
+    <!--
+      The user session DAO is constructed with the session data store it must share, so that both
+      report the same view of Redis. Copying it would defeat the point of the injection.
+    -->
+    <Match>
+        <Class name="org.wso2.carbon.identity.session.store.redis.dao.RedisUserSessionDAOImpl" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+
+    <!--
+      The connection manager exposes the lettuce command interfaces of its shared connection by
+      design. They are the connection, not a copyable value.
+    -->
+    <Match>
+        <Class name="org.wso2.carbon.identity.session.store.redis.util.RedisConnectionManager" />
+        <Bug pattern="EI_EXPOSE_REP" />
+    </Match>
+
+</FindBugsFilter>
